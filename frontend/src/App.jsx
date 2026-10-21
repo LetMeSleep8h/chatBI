@@ -9,6 +9,11 @@ function App() {
         .then((res) => res.text())
         .then(setResult)
   }
+    function test() {
+        fetch('/test', { method: 'GET' })
+            .then((res) => res.text())
+            .then(setResult)
+    }
 
   return (
       <>
