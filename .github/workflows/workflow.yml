@@ -10,5 +10,5 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.GITEE_KEY }}
         with:
-          source-repo: "git@github.com/LetMeSleep8h/chatBI.git"
+          source-repo: "git@github.com:LetMeSleep8h/chatBI.git"
           destination-repo: "git@gitee.com:Sleep8h/chatBI.git"
