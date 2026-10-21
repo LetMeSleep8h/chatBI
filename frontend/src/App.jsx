@@ -17,7 +17,7 @@ function App() {
 
   return (
       <>
-        <button onClick={heath}>请求</button>
+        <button onClick={heath}>请求按钮</button>
         <p>后端返回: {result}</p>
       </>
   )
