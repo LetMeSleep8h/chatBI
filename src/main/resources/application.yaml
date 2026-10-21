@@ -1,3 +1,6 @@
 spring:
   application:
     name: chatBI
+serve:
+server:
+  port: 8090
