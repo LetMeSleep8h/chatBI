@@ -5,7 +5,7 @@ function App() {
   const [result, setResult] = useState('')
 
   function heath() {
-    fetch('/heath', { method: 'POST' })
+    fetch('/heath', { method: 'GET' })
         .then((res) => res.text())
         .then(setResult)
   }
