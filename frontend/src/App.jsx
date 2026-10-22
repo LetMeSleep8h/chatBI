@@ -5,12 +5,12 @@ function App() {
   const [result, setResult] = useState('')
 
   function heath() {
-    fetch('/heath', { method: 'GET' })
+    fetch('bi/heath', { method: 'GET' })
         .then((res) => res.text())
         .then(setResult)
   }
     function test() {
-        fetch('/test', { method: 'GET' })
+        fetch('bi/test', { method: 'GET' })
             .then((res) => res.text())
             .then(setResult)
     }
