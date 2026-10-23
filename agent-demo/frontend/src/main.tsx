@@ -8,14 +8,22 @@ import Login from './pages/Login'
 import TaskDetail from './pages/TaskDetail'
 import './index.css'
 
+function RequireAuth({ children }: { children: JSX.Element }) {
+  const token = localStorage.getItem('token')
+  const user = localStorage.getItem('user')
+  // 未登录不发请求，直接引导到登录页
+  if (!token || !user) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ConfigProvider locale={zhCN}>
       <BrowserRouter basename="/agent">
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<Board />} />
-          <Route path="/tasks/:id" element={<TaskDetail />} />
+          <Route path="/" element={<RequireAuth><Board /></RequireAuth>} />
+          <Route path="/tasks/:id" element={<RequireAuth><TaskDetail /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

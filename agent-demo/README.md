@@ -48,19 +48,19 @@ AUTH_SECRET=your-random-secret docker compose up -d --build
 # 打开 http://localhost:8000/agent/
 ```
 
-### 方式二：前后端分开跑（开发）
+### 方式二：本地开发（前端 5180 / 后端 8070）
 
 ```bash
-# 后端
-cd backend
-pip install -r requirements.txt
-AUTH_SECRET=dev-secret uvicorn app.main:app --port 8000
-# 首次启动自动建库 + 写入种子数据（./data/app.db）
+# 在 chatBI 仓库根目录执行（首次需先装依赖：
+#   backend: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#   frontend: npm install）
+./agent-demo/dev.sh
+# 自动拉起后端 :8070 和前端 :5180，并打开浏览器 http://localhost:5180/agent/
+# 再执行会先杀掉旧进程，幂等可重复
 
-# 前端
-cd frontend
-npm install
-npm run dev        # http://localhost:5174/agent/ ，/agent/api 已代理到 8000
+# 或手动分开跑：
+#   后端: cd agent-demo/backend && .venv/bin/uvicorn app.main:app --port 8070
+#   前端: cd agent-demo/frontend && npm run dev
 ```
 
 ## 默认账号
