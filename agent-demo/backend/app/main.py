@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from typing import Optional
 from datetime import datetime
@@ -406,7 +407,8 @@ def root():
     return RedirectResponse("/agent/")
 
 
-STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
+# 静态目录可被环境变量覆盖（容器内 Dockerfile 设为 /app/static）
+STATIC_DIR = Path(os.environ.get("STATIC_DIR", str(Path(__file__).resolve().parent.parent / "static")))
 
 
 @app.get("/agent/{full_path:path}", include_in_schema=False)
