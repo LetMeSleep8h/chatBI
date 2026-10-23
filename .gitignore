@@ -39,3 +39,4 @@ agent-demo/backend/.venv/
 agent-demo/backend/data/
 agent-demo/uploads/
 agent-demo/backend/uploads/
+agent-demo/backend/static/
