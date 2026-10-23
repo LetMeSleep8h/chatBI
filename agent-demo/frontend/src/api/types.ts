@@ -108,6 +108,11 @@ export async function reviewRecord(id: number, result: '通过' | '打回', comm
   return (await http.patch<RecordItem>(`/records/${id}/review`, { result, comment })).data
 }
 
+/** user 页大按钮：推送一条模拟数据（自动挂到本账号的默认任务） */
+export async function pushMock() {
+  return (await http.post<RecordItem & { total: number }>('/mock/push')).data
+}
+
 /** admin：模拟工位产出（生成 count 条虚拟数据） */
 export async function mockIngest(taskId: number, count: number) {
   return (await http.post<RecordItem[]>('/mock/ingest', { task_id: taskId, count })).data

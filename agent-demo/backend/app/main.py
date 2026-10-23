@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .database import Base, SessionLocal, engine, get_db
 from .models import Record, Task, User
 from .seed import ONLINE_STATIONS_FAKE, seed_if_empty
-from .security import current_user, hash_password, issue_token
+from .security import current_user, hash_password, issue_token, parse_token
 from .statemachine import allowed, check
 
 app = FastAPI(title="具身智能数据采集平台（最小原型）", docs_url="/agent/docs")
@@ -280,6 +280,10 @@ def list_records(task_id: Optional[int] = None, user=Depends(current_user),
     q = db.query(Record).order_by(Record.id.desc())
     if user["role"] == "operator":
         q = q.filter(Record.operator_id == user["user_id"])
+    elif user["role"] == "customer":
+        u = db.get(User, user["user_id"])
+        watched = db.query(User).filter(User.name == CUSTOMER_MAP.get(u.name, "")).first()
+        q = q.filter(Record.operator_id == (watched.id if watched else -1))
     elif task_id is not None:
         q = q.filter(Record.task_id == task_id)
     names = user_names(db)
@@ -330,6 +334,11 @@ def download(record_id: int, user=Depends(current_user), db: Session = Depends(g
         raise HTTPException(404, f"数据条目不存在: {record_id}")
     if user["role"] == "operator" and r.operator_id != user["user_id"]:
         raise HTTPException(403, "无权下载他人数据")
+    if user["role"] == "customer":
+        u = db.get(User, user["user_id"])
+        watched = db.query(User).filter(User.name == CUSTOMER_MAP.get(u.name, "")).first()
+        if watched is None or r.operator_id != watched.id:
+            raise HTTPException(403, "客户只能下载自己可见操作员的数据")
     path = Path(r.file_path)
     if not path.exists():
         raise HTTPException(404, "文件不存在")
@@ -448,6 +457,42 @@ async def start_session(req: SessionStartReq, user=Depends(current_user),
     }
 
 
+@api.post("/mock/push")
+async def mock_push(user=Depends(current_user), db: Session = Depends(get_db)):
+    """user 页大按钮：点一下 = 一条模拟数据采集（自动挂到该用户的默认任务）。"""
+    if user["role"] != "operator":
+        raise HTTPException(403, "只有 operator 可推送模拟数据")
+    u = db.get(User, user["user_id"])
+    default_name = f"{u.name} 的模拟数据采集"
+    t = db.query(Task).filter(Task.created_by == u.id, Task.name == default_name).first()
+    if t is None:
+        t = Task(name=default_name, station=f"U-{u.name}", robot_type="模拟器",
+                 target_count=9999, collected_count=0, status="采集中",
+                 assignee_id=u.id, created_by=u.id)
+        db.add(t)
+        db.flush()
+    r = make_mock_record(db, t, u.id, source="用户模拟推送")
+    t.collected_count += 1
+    db.commit()
+    names = user_names(db)
+    total = db.query(Record).filter(Record.operator_id == u.id, Record.status != "已重传").count()
+    out = record_out(r, names)
+    out["total"] = total
+    await manager.broadcast({
+        "type": "record_new",
+        "task_id": t.id,
+        "task_name": default_name,
+        "station": t.station,
+        "operator": u.name,
+        "data_type": r.data_type,
+        "record_id": r.id,
+        "created_at": r.created_at.strftime("%H:%M:%S"),
+        "collected_count": t.collected_count,
+        "target_count": t.target_count,
+    })
+    return out
+
+
 # ---------------- stats ----------------
 
 
@@ -465,26 +510,41 @@ def stats(user=Depends(current_user), db: Session = Depends(get_db)):
 # ---------------- WebSocket 实时推送（管理端看板） ----------------
 
 
+# toB 客户账号 → 可见的操作员（数据隔离演示）
+CUSTOMER_MAP = {"B1": "user1", "B2": "user2"}
+
+
+class Connection:
+    """一条 WS 连接；customer 角色带 operator_filter，只收对应操作员的事件。"""
+
+    def __init__(self, ws: WebSocket, operator_filter: Optional[str] = None):
+        self.ws = ws
+        self.operator_filter = operator_filter
+
+
 class ConnectionManager:
-    """维护 /ws/dashboard 的活跃连接，提供广播。"""
+    """维护 /ws/dashboard 的活跃连接，提供按可见性过滤的广播。"""
 
     def __init__(self):
-        self.active: list[WebSocket] = []
+        self.active: list[Connection] = []
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
-        self.active.append(ws)
+    async def connect(self, conn: Connection):
+        await conn.ws.accept()
+        self.active.append(conn)
 
-    def disconnect(self, ws: WebSocket):
-        if ws in self.active:
-            self.active.remove(ws)
+    def disconnect(self, conn: Connection):
+        if conn in self.active:
+            self.active.remove(conn)
 
     async def broadcast(self, message: dict):
-        for ws in list(self.active):
+        operator = message.get("operator")
+        for conn in list(self.active):
+            if conn.operator_filter and conn.operator_filter != operator:
+                continue  # 客户只能看到自己映射操作员的数据
             try:
-                await ws.send_json(message)
+                await conn.ws.send_json(message)
             except Exception:
-                self.disconnect(ws)
+                self.disconnect(conn)
 
 
 manager = ConnectionManager()
@@ -492,14 +552,25 @@ manager = ConnectionManager()
 
 @app.websocket("/ws/dashboard")
 @app.websocket("/agent/ws/dashboard")  # 单容器直连前缀（与 /agent/api 对齐）
-async def ws_dashboard(ws: WebSocket):
-    # demo 阶段不做鉴权；生产建议校验 query 里的 token
-    await manager.connect(ws)
+async def ws_dashboard(ws: WebSocket, db: Session = Depends(get_db)):
+    # token 走 query 参数；customer 角色按映射只收对应操作员的推送
+    operator_filter = None
+    token = ws.query_params.get("token")
+    if token:
+        try:
+            payload = parse_token(token)
+            u = db.get(User, payload["user_id"])
+            if u is not None:
+                operator_filter = CUSTOMER_MAP.get(u.name)  # 非 customer 为 None（看全部）
+        except Exception:
+            pass
+    conn = Connection(ws, operator_filter)
+    await manager.connect(conn)
     try:
         while True:
             await ws.receive_text()  # 保活（客户端 ping）
     except WebSocketDisconnect:
-        manager.disconnect(ws)
+        manager.disconnect(conn)
 
 
 # 双前缀挂载：/api（反代剥前缀后）与 /agent/api（单容器直连）

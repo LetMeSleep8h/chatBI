@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, Col, Form, Input, InputNumber, message, Modal, Row, Space, Spin } from 'antd'
+import { Button, Card, Col, Form, Input, InputNumber, message, Modal, Row, Space, Spin, Table } from 'antd'
 import { Link, useNavigate } from 'react-router-dom'
-import { assignTask, createTask, getStats, listTasks, mockIngest, type PlatformStats, type Task } from '../api/types'
+import { assignTask, createTask, getStats, listRecords, listTasks, mockIngest, pushMock, type PlatformStats, type RecordItem, type Task } from '../api/types'
+import Push from './Push'
 import RealtimePanel from '../components/RealtimePanel'
 import { StatusTag } from '../api/status'
 
@@ -25,7 +26,56 @@ function isManager(role: string) {
 export default function Board() {
   const navigate = useNavigate()
   const user = store()
+  // user1/user2：登录即"模拟数据推送"大按钮页
+  if (user.role === 'operator' && (user.name === 'user1' || user.name === 'user2')) {
+    return <Push name={user.name} />
+  }
+  // B1/B2 客户：实时视图，仅见映射操作员的数据（服务端过滤）
+  if (user.role === 'customer') {
+    return <CustomerView name={user.name} />
+  }
+  return <AdminBoard user={user} navigate={navigate} />
+}
+
+/** B1/B2 客户视图：实时流入面板 + 自己可见的数据表格 */
+function CustomerView({ name }: { name: string }) {
+  const [records, setRecords] = useState<RecordItem[]>([])
+  async function load() {
+    setRecords(await listRecords())
+  }
+  useEffect(() => {
+    load().catch(() => {})
+  }, [])
+  return (
+    <div style={{ padding: 24, minHeight: '100vh', background: '#f0f2f5' }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
+        <h2 style={{ margin: 0 }}>客户视图（{name}）</h2>
+        <Button onClick={() => { localStorage.clear(); location.href = '/agent/login' }}>退出登录</Button>
+      </div>
+      <RealtimePanel onEvent={() => { load().catch(() => {}) }} />
+      <Card title="我可见的数据" size="small">
+        <Table<RecordItem>
+          rowKey="id"
+          size="small"
+          dataSource={records}
+          pagination={{ pageSize: 8 }}
+          columns={[
+            { title: 'ID', dataIndex: 'id', width: 60 },
+            { title: '数据类型', dataIndex: 'data_type', width: 90 },
+            { title: '操作员', dataIndex: 'operator_name', width: 100 },
+            { title: '上传时间', dataIndex: 'created_at', width: 170 },
+            { title: '状态', dataIndex: 'status', width: 90, render: (v: string) => <StatusTag status={v} /> },
+          ]}
+        />
+      </Card>
+    </div>
+  )
+}
+
+/** admin/reviewer 看板 + operator1 视图 */
+function AdminBoard({ user, navigate }: { user: { name: string; role: string }; navigate: ReturnType<typeof useNavigate> }) {
   const [tasks, setTasks] = useState<Task[]>([])
+  const [records, setRecords] = useState<RecordItem[]>([])
   const [stats, setStats] = useState<PlatformStats | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [assignTaskId, setAssignTaskId] = useState<number | null>(null)
@@ -34,7 +84,7 @@ export default function Board() {
   const [assignForm] = Form.useForm()
   const [ingestForm] = Form.useForm()
 
-  // WebSocket record_new 事件：统计卡片即时跳动 + 刷新任务列表
+  // WebSocket record_new 事件：统计卡片即时跳动 + 刷新任务列表 + 全量数据表插行
   async function onRecordEvent() {
     setStats((prev) =>
       prev
@@ -42,7 +92,9 @@ export default function Board() {
         : prev,
     )
     try {
-      setTasks(await listTasks())
+      const [ts, rs] = await Promise.all([listTasks(), user.role !== 'operator' ? listRecords() : Promise.resolve(null)])
+      setTasks(ts)
+      if (rs) setRecords(rs)
     } catch { /* 忽略 */ }
   }
 
@@ -50,6 +102,7 @@ export default function Board() {
     const [ts, st] = await Promise.all([listTasks(), getStats()])
     setTasks(ts)
     setStats(st)
+    if (user.role !== 'operator') setRecords(await listRecords())
   }
   useEffect(() => {
     load().catch(() => {})
@@ -121,6 +174,26 @@ export default function Board() {
       </Row>
 
       {isManager(user.role) && <RealtimePanel onEvent={() => onRecordEvent()} />}
+
+      {isManager(user.role) && (
+        <Card title={`全部数据（${records.length}）`} size="small" style={{ marginBottom: 16 }}>
+          <Table<RecordItem>
+            rowKey="id"
+            size="small"
+            dataSource={records}
+            pagination={{ pageSize: 6 }}
+            rowClassName={(_, i) => (i === 0 ? 'newest-row' : '')}
+            columns={[
+              { title: 'ID', dataIndex: 'id', width: 60 },
+              { title: '数据类型', dataIndex: 'data_type', width: 90 },
+              { title: '操作员', dataIndex: 'operator_name', width: 100 },
+              { title: '上传时间', dataIndex: 'created_at', width: 170 },
+              { title: '状态', dataIndex: 'status', width: 90, render: (v: string) => <StatusTag status={v} /> },
+              { title: '文件', width: 70, render: (_, r) => (r.file_name.startsWith('mock_') ? <span style={{ color: '#999' }}>模拟</span> : <a href={`/agent/api/records/${r.id}/download`}>下载</a>) },
+            ]}
+          />
+        </Card>
+      )}
 
       {/* 任务卡片按状态分栏 */}
       <Row gutter={16}>

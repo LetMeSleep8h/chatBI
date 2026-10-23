@@ -67,9 +67,13 @@ AUTH_SECRET=your-random-secret docker compose up -d --build
 
 | 用户名 | 密码 | 角色 |
 |---|---|---|
-| admin | 12345678 | reviewer（管理端：建任务/分配/审核） |
-| operator1 | 12345678 | operator（上传/重传） |
-| user | 12345678 | operator（普通用户） |
+| admin | 12345678 | reviewer（管理端：全局视图 + 全量数据实时表） |
+| operator1 | 12345678 | operator（工位控制台/任务上传） |
+| user1 | 12345678 | operator（数据生产页：大按钮"模拟数据推送"） |
+| user2 | 12345678 | operator（数据生产页） |
+| user | 12345678 | operator（隔离对照组，保持空） |
+| B1 | 12345678 | customer（toB 客户，**只看 user1** 的数据） |
+| B2 | 12345678 | customer（toB 客户，**只看 user2** 的数据） |
 
 > 说明：默认管理员账号的角色值为 `reviewer`，拥有建任务/分配/审核全部管理能力（`require_manager` 同时放行 admin/reviewer），与种子账号设计一致。
 
@@ -115,6 +119,13 @@ proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection "upgrade";
 proxy_read_timeout 300s;
 ```
+
+## 演示动线（WebSocket 实时）
+
+1. `user1` 登录 → 一个大按钮"模拟数据推送"，点一下 = 一条数据采集；
+2. `admin` 登录 → 看板"实时数据流入"面板 + "全部数据"表格，**不刷新**实时插行、统计跳动；
+3. `B1` 登录 → 客户视图，只实时收到 user1 的数据（B2 只收 user2），表/下载均按映射隔离；
+4. 打开两个浏览器窗口并排：左边 user1 点按钮，右边 admin/B1 实时变动。
 
 ## 三账号隔离对比
 

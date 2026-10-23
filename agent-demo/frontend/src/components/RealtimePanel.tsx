@@ -41,13 +41,16 @@ export default function RealtimePanel({ onEvent }: { onEvent?: (e: RecordEvent) 
   const [buckets, setBuckets] = useState<number[]>(Array(12).fill(0))
   const wsRef = useRef<WebSocket | null>(null)
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onEventRef = useRef(onEvent)
+  onEventRef.current = onEvent
 
   useEffect(() => {
     let closed = false
 
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      const ws = new WebSocket(`${proto}://${location.host}/agent/ws/dashboard`)
+      const token = localStorage.getItem('token') ?? ''
+      const ws = new WebSocket(`${proto}://${location.host}/agent/ws/dashboard?token=${encodeURIComponent(token)}`)
       wsRef.current = ws
 
       ws.onopen = () => setConnected(true)
@@ -65,7 +68,7 @@ export default function RealtimePanel({ onEvent }: { onEvent?: (e: RecordEvent) 
           setEvents((prev) => [event, ...prev].slice(0, 30))
           // 当前分钟 +1（滚动窗口，最右为现在）
           setBuckets((prev) => [...prev.slice(1), prev[prev.length - 1] + 1])
-          onEvent?.(event)
+          onEventRef.current?.(event)
         } catch {
           /* 忽略非 JSON 帧 */
         }
