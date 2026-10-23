@@ -194,7 +194,8 @@ async def upload_record(
     task_id: int = Form(...),
     data_type: str = Form(...),
     meta: str = Form("{}"),
-    file: UploadFile = File(...),
+    mock: str = Form("false"),
+    file: UploadFile = File(None),
     user=Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -209,10 +210,12 @@ async def upload_record(
         raise HTTPException(409, f"任务当前状态为「{t.status}」，不允许上传")
     if data_type not in DATA_TYPES:
         raise HTTPException(422, "data_type 只允许: 视频 / 触觉 / 关节角度")
-    if file.size is None or file.size == 0:
-        raise HTTPException(422, "文件不能为空")
-    if file.size > MAX_SIZE:
-        raise HTTPException(413, "文件超过 50MB 上限")
+    if mock.lower() != "true":
+        # 真实文件上传才校验文件
+        if file is None or file.size is None or file.size == 0:
+            raise HTTPException(422, "文件不能为空")
+        if file.size > MAX_SIZE:
+            raise HTTPException(413, "文件超过 50MB 上限")
 
     # 被打回重传：新增记录，旧「被打回」记录置为「已重传」（审计链）
     for old in (
@@ -224,17 +227,21 @@ async def upload_record(
         check("record", old.status, "已重传")
         old.status = "已重传"
 
-    target_dir = UPLOAD_DIR / str(task_id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    file_name = file.filename or "unnamed"
-    dest = target_dir / f"{int(datetime.now().timestamp() * 1000)}_{file_name}"
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    r = Record(task_id=task_id, operator_id=user["user_id"], data_type=data_type,
-               file_path=str(dest), meta_json=meta, status="待质检",
-               created_at=datetime.now(), file_name=file_name)
-    db.add(r)
+    if mock.lower() == "true":
+        # mock 模式：不需要真实文件，生成一条虚拟数据（模拟工位 SDK 产出）
+        r = make_mock_record(db, t, user["user_id"], source="操作员模拟上传")
+        t.collected_count += 1
+    else:
+        target_dir = UPLOAD_DIR / str(task_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_name = file.filename or "unnamed"
+        dest = target_dir / f"{int(datetime.now().timestamp() * 1000)}_{file_name}"
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        r = Record(task_id=task_id, operator_id=user["user_id"], data_type=data_type,
+                   file_path=str(dest), meta_json=meta, status="待质检",
+                   created_at=datetime.now(), file_name=file_name)
+        db.add(r)
 
     # 已采条数（非已重传）达标 → 任务自动 采集中 → 待质检
     active = (
@@ -286,10 +293,12 @@ def review(record_id: int, req: ReviewReq, user=Depends(current_user),
     r.reviewed_by = user["user_id"]  # 审计：操作人 + 时间
     r.reviewed_at = datetime.now()
 
-    # 通过 → collected_count+1；达标则任务 待质检 → 已交付
+    # 通过 → collected_count+1（mock 生成的记录在产出时已计数，不重复加）；
+    # 达标则任务 待质检 → 已交付
     if req.result == "通过":
         t = db.get(Task, r.task_id)
-        t.collected_count += 1
+        if not r.file_path.startswith("uploads/mock"):
+            t.collected_count += 1
         if t.collected_count >= t.target_count and allowed("task", t.status, "已交付"):
             t.status = "已交付"
     db.commit()
@@ -307,6 +316,68 @@ def download(record_id: int, user=Depends(current_user), db: Session = Depends(g
     if not path.exists():
         raise HTTPException(404, "文件不存在")
     return FileResponse(path, filename=r.file_name)
+
+
+# ---------------- mock 工位产出 ----------------
+
+MOCK_TYPES = ["视频", "触觉", "关节角度"]
+
+
+def make_mock_record(db: Session, t: Task, operator_id: int, source: str) -> Record:
+    """生成一条虚拟数据记录：轮换 data_type，写一个模拟传感器采样的 JSON 文件。"""
+    idx = db.query(Record).filter(Record.task_id == t.id).count()
+    data_type = MOCK_TYPES[idx % len(MOCK_TYPES)]
+    ts = datetime.now()
+
+    r = Record(task_id=t.id, operator_id=operator_id, data_type=data_type,
+               file_path="", meta_json=json.dumps({
+                   "工位": t.station, "来源": source,
+                   "时间": ts.strftime("%Y-%m-%d %H:%M:%S"),
+               }, ensure_ascii=False),
+               status="待质检", created_at=ts, file_name=f"mock_{t.id}_{idx + 1}.json")
+    db.add(r)
+    db.flush()  # 拿到自增 id 写进文件内容
+
+    mock_dir = UPLOAD_DIR / "mock"
+    mock_dir.mkdir(parents=True, exist_ok=True)
+    path = mock_dir / f"{int(ts.timestamp() * 1000)}_{r.id}.json"
+    path.write_text(json.dumps({
+        "record_id": r.id,
+        "task_id": t.id,
+        "data_type": data_type,
+        "timestamp": ts.isoformat(),
+        "sensor_samples": [round(0.5 + 0.1 * ((i + r.id) % 7), 3) for i in range(8)],
+    }, ensure_ascii=False), encoding="utf-8")
+    r.file_path = str(path)
+    return r
+
+
+class MockIngestReq(BaseModel):
+    task_id: int
+    count: int = 1
+
+
+@api.post("/mock/ingest")
+def mock_ingest(req: MockIngestReq, user=Depends(current_user),
+                db: Session = Depends(get_db)):
+    """模拟采集工位自动上传（MVP 用它代替工位 SDK），仅管理端可调用。"""
+    if user["role"] not in ("admin", "reviewer"):
+        raise HTTPException(403, "需要管理端角色（admin/reviewer）")
+    t = db.get(Task, req.task_id)
+    if t is None:
+        raise HTTPException(404, f"任务不存在: {req.task_id}")
+    if not 1 <= req.count <= 5:
+        raise HTTPException(422, "count 只允许 1~5")
+
+    created = [make_mock_record(db, t, user["user_id"], source="工位自动上传")
+               for _ in range(req.count)]
+    t.collected_count += req.count
+    # 已采达标 → 采集中自动流转 待质检（已交付留到质检全部通过时）
+    if t.collected_count >= t.target_count and allowed("task", t.status, "待质检"):
+        t.status = "待质检"
+    db.commit()
+    names = user_names(db)
+    return [record_out(r, names) for r in created]
 
 
 # ---------------- stats ----------------

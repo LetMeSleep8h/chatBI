@@ -91,6 +91,21 @@ export async function reviewRecord(id: number, result: '通过' | '打回', comm
   return (await http.patch<RecordItem>(`/records/${id}/review`, { result, comment })).data
 }
 
+/** admin：模拟工位产出（生成 count 条虚拟数据） */
+export async function mockIngest(taskId: number, count: number) {
+  return (await http.post<RecordItem[]>('/mock/ingest', { task_id: taskId, count })).data
+}
+
+/** operator：mock 上传一条（无需真实文件） */
+export async function mockUploadRecord(taskId: number) {
+  const form = new FormData()
+  form.append('task_id', String(taskId))
+  form.append('mock', 'true')
+  return (await http.post<RecordItem>('/records', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })).data
+}
+
 export function downloadUrl(id: number) {
   return `/agent/api/records/${id}/download`
 }

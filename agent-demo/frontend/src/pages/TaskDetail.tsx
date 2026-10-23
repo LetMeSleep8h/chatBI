@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Descriptions, Form, Input, Modal, Space, Table, message } from 'antd'
 import { Link, useParams } from 'react-router-dom'
-import { downloadUrl, getTaskDetail, reviewRecord, type RecordItem, type TaskDetail as Detail } from '../api/types'
+import { downloadUrl, getTaskDetail, mockUploadRecord, reviewRecord, type RecordItem, type TaskDetail as Detail } from '../api/types'
 import { StatusTag } from '../api/status'
-import UploadModal from '../components/UploadModal'
 
 function store(): { name: string; role: string } {
   const raw = localStorage.getItem('user')
@@ -20,7 +19,6 @@ export default function TaskDetail() {
 
   const [detail, setDetail] = useState<Detail | null>(null)
   const [rejectTarget, setRejectTarget] = useState<RecordItem | null>(null)
-  const [uploadOpen, setUploadOpen] = useState(false)
   const [rejectForm] = Form.useForm()
 
   const load = () => {
@@ -51,8 +49,8 @@ export default function TaskDetail() {
     <div style={{ padding: 24, minHeight: '100vh', background: '#f0f2f5' }}>
       <Space style={{ marginBottom: 16 }}>
         <Link to="/">返回看板</Link>
-        {isOperator && task.status === '采集中' && (
-          <Button type="primary" onClick={() => setUploadOpen(true)}>上传数据</Button>
+        {isOperator && (task.status === '采集中' || task.status === '待质检') && (
+          <Button type="primary" onClick={async () => { await mockUploadRecord(taskId); message.success('已 mock 上传一条（待质检）'); load() }}>mock 上传一条</Button>
         )}
       </Space>
 
@@ -66,16 +64,15 @@ export default function TaskDetail() {
         </Descriptions>
       </Card>
 
-      <Card title="数据条目">
+      <Card title="数据条目" extra={<span style={{ fontSize: 12, color: '#888' }}>数据来源：采集工位产出与操作员上传，每条可追溯到工位、任务、操作员</span>}>
         <Table<RecordItem>
           rowKey="id"
           dataSource={detail.records}
           pagination={false}
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 60 },
-            { title: '文件名', dataIndex: 'file_name' },
-            { title: '操作员', dataIndex: 'operator_name', width: 100 },
             { title: '数据类型', dataIndex: 'data_type', width: 90 },
+            { title: '工位', width: 80, render: (_, r) => { try { return JSON.parse(r.meta_json ?? '{}').station ?? task.station } catch { return task.station } } },
+            { title: '操作员', dataIndex: 'operator_name', width: 100 },
             { title: '上传时间', dataIndex: 'created_at', width: 170 },
             { title: '质检状态', dataIndex: 'status', width: 90, render: (s: string) => <StatusTag status={s} /> },
             { title: '质检意见', dataIndex: 'review_comment', ellipsis: true },
@@ -95,7 +92,7 @@ export default function TaskDetail() {
                   return (
                     <Space direction="vertical" size={4}>
                       <span style={{ color: 'red' }}>原因：{record.review_comment ?? '-'}</span>
-                      <Button size="small" onClick={() => setUploadOpen(true)}>重新上传</Button>
+                      <Button size="small" onClick={async () => { await mockUploadRecord(taskId); message.success('已 mock 重传一条（待质检）'); load() }}>mock 重传一条</Button>
                     </Space>
                   )
                 }
@@ -119,16 +116,6 @@ export default function TaskDetail() {
           </Form.Item>
         </Form>
       </Modal>
-
-      <UploadModal
-        taskId={taskId}
-        open={uploadOpen}
-        onClose={() => setUploadOpen(false)}
-        onUploaded={() => {
-          setUploadOpen(false)
-          load()
-        }}
-      />
     </div>
   )
 }

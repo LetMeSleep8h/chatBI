@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Col, Form, Input, InputNumber, message, Modal, Row, Space, Spin } from 'antd'
 import { Link, useNavigate } from 'react-router-dom'
-import { assignTask, createTask, getStats, listTasks, type PlatformStats, type Task } from '../api/types'
+import { assignTask, createTask, getStats, listTasks, mockIngest, mockUploadRecord, type PlatformStats, type Task } from '../api/types'
 import { StatusTag } from '../api/status'
-import UploadModal from '../components/UploadModal'
 
 const COLUMNS = ['待分配', '采集中', '待质检', '已交付']
 
@@ -29,9 +28,10 @@ export default function Board() {
   const [stats, setStats] = useState<PlatformStats | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [assignTaskId, setAssignTaskId] = useState<number | null>(null)
-  const [uploadTaskId, setUploadTaskId] = useState<number | null>(null)
+  const [ingestTaskId, setIngestTaskId] = useState<number | null>(null)
   const [createForm] = Form.useForm()
   const [assignForm] = Form.useForm()
+  const [ingestForm] = Form.useForm()
 
   async function load() {
     const [ts, st] = await Promise.all([listTasks(), getStats()])
@@ -57,15 +57,31 @@ export default function Board() {
     load().catch(() => {})
   }
 
+  async function doMockUpload(t: Task) {
+    await mockUploadRecord(t.id)
+    message.success('已 mock 上传一条（待质检）')
+    load().catch(() => {})
+  }
+
   function cardActions(t: Task) {
     const list: React.ReactNode[] = [<Link key="detail" to={`/tasks/${t.id}`}>详情</Link>]
-    if (user.role === 'operator' && t.status === '采集中') {
-      list.push(<a key="upload" onClick={() => setUploadTaskId(t.id)}>上传数据</a>)
+    if (user.role === 'operator' && (t.status === '采集中' || t.status === '待质检')) {
+      list.push(<a key="upload" onClick={() => doMockUpload(t)}>mock 上传一条</a>)
     }
     if (isManager(user.role) && t.status === '待分配') {
       list.push(<a key="assign" onClick={() => setAssignTaskId(t.id)}>分配操作员</a>)
     }
+    if (isManager(user.role) && (t.status === '采集中' || t.status === '待质检')) {
+      list.push(<a key="ingest" onClick={() => { setIngestTaskId(t.id); ingestForm.setFieldValue('count', 1) }}>模拟工位产出</a>)
+    }
     return list
+  }
+
+  async function submitIngest(values: { count: number }) {
+    const created = await mockIngest(ingestTaskId!, values.count)
+    message.success(`已模拟产出 ${created.length} 条（待质检）`)
+    setIngestTaskId(null)
+    load().catch(() => {})
   }
 
   return (
@@ -149,16 +165,14 @@ export default function Board() {
         </Form>
       </Modal>
 
-      {/* 上传弹窗（operator） */}
-      <UploadModal
-        taskId={uploadTaskId}
-        open={uploadTaskId !== null}
-        onClose={() => setUploadTaskId(null)}
-        onUploaded={() => {
-          setUploadTaskId(null)
-          load().catch(() => {})
-        }}
-      />
+      {/* 模拟工位产出弹窗（admin） */}
+      <Modal title="模拟工位产出" open={ingestTaskId !== null} onCancel={() => setIngestTaskId(null)} onOk={() => ingestForm.submit()}>
+        <Form form={ingestForm} layout="vertical" onFinish={submitIngest}>
+          <Form.Item name="count" label="生成条数（1~5）" rules={[{ required: true, message: '请选择条数' }]}>
+            <InputNumber min={1} max={5} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
