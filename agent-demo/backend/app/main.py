@@ -194,7 +194,7 @@ def task_detail(task_id: int, user=Depends(current_user), db: Session = Depends(
 @api.post("/records")
 async def upload_record(
     task_id: int = Form(...),
-    data_type: str = Form(...),
+    data_type: Optional[str] = Form(None),  # mock 模式由服务端自动轮换生成
     meta: str = Form("{}"),
     mock: str = Form("false"),
     file: UploadFile = File(None),
@@ -210,9 +210,10 @@ async def upload_record(
         raise HTTPException(403, "任务未分配给你，无权上传")  # 防水平越权
     if t.status not in ("采集中", "待质检"):
         raise HTTPException(409, f"任务当前状态为「{t.status}」，不允许上传")
-    if data_type not in DATA_TYPES:
+    mock_mode = mock.lower() == "true"
+    if not mock_mode and (data_type is None or data_type not in DATA_TYPES):
         raise HTTPException(422, "data_type 只允许: 视频 / 触觉 / 关节角度")
-    if mock.lower() != "true":
+    if not mock_mode:
         # 真实文件上传才校验文件
         if file is None or file.size is None or file.size == 0:
             raise HTTPException(422, "文件不能为空")
@@ -229,7 +230,7 @@ async def upload_record(
         check("record", old.status, "已重传")
         old.status = "已重传"
 
-    if mock.lower() == "true":
+    if mock_mode:
         # mock 模式：不需要真实文件，生成一条虚拟数据（模拟工位 SDK 产出）
         r = make_mock_record(db, t, user["user_id"], source="操作员模拟上传")
         t.collected_count += 1
@@ -428,10 +429,8 @@ async def start_session(req: SessionStartReq, user=Depends(current_user),
         raise HTTPException(404, f"任务不存在: {req.task_id}")
     if t.assignee_id != user["user_id"]:
         raise HTTPException(403, "任务未分配给你，无权开启会话")
-    if t.status == "待质检":
-        raise HTTPException(409, "任务已达目标条数，等待质检")
     if t.status == "已交付":
-        raise HTTPException(409, "任务已交付")
+        raise HTTPException(409, "任务已交付，无法再采集")
     if t.status == "待分配":
         check("task", t.status, "采集中")
         t.status = "采集中"
@@ -492,6 +491,7 @@ manager = ConnectionManager()
 
 
 @app.websocket("/ws/dashboard")
+@app.websocket("/agent/ws/dashboard")  # 单容器直连前缀（与 /agent/api 对齐）
 async def ws_dashboard(ws: WebSocket):
     # demo 阶段不做鉴权；生产建议校验 query 里的 token
     await manager.connect(ws)
