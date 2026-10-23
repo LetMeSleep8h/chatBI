@@ -13,7 +13,9 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(128))
-    role: Mapped[str] = mapped_column(String(16))  # admin / operator / reviewer
+    role: Mapped[str] = mapped_column(String(16))  # admin / operator / reviewer / customer
+    # customer 账号绑定的操作员 id（B1→user1，B2→user2）；其他角色为 NULL
+    bound_operator_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class Task(Base):

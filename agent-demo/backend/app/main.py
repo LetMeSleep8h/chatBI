@@ -282,8 +282,8 @@ def list_records(task_id: Optional[int] = None, user=Depends(current_user),
         q = q.filter(Record.operator_id == user["user_id"])
     elif user["role"] == "customer":
         u = db.get(User, user["user_id"])
-        watched = db.query(User).filter(User.name == CUSTOMER_MAP.get(u.name, "")).first()
-        q = q.filter(Record.operator_id == (watched.id if watched else -1))
+        # 按绑定的操作员 id 过滤（admin 不加任何 id 条件，直接读全表）
+        q = q.filter(Record.operator_id == (u.bound_operator_id if u.bound_operator_id else -1))
     elif task_id is not None:
         q = q.filter(Record.task_id == task_id)
     names = user_names(db)
@@ -336,9 +336,8 @@ def download(record_id: int, user=Depends(current_user), db: Session = Depends(g
         raise HTTPException(403, "无权下载他人数据")
     if user["role"] == "customer":
         u = db.get(User, user["user_id"])
-        watched = db.query(User).filter(User.name == CUSTOMER_MAP.get(u.name, "")).first()
-        if watched is None or r.operator_id != watched.id:
-            raise HTTPException(403, "客户只能下载自己可见操作员的数据")
+        if not u.bound_operator_id or r.operator_id != u.bound_operator_id:
+            raise HTTPException(403, "客户只能下载自己绑定操作员的数据")
     path = Path(r.file_path)
     if not path.exists():
         raise HTTPException(404, "文件不存在")
@@ -510,10 +509,6 @@ def stats(user=Depends(current_user), db: Session = Depends(get_db)):
 # ---------------- WebSocket 实时推送（管理端看板） ----------------
 
 
-# toB 客户账号 → 可见的操作员（数据隔离演示）
-CUSTOMER_MAP = {"B1": "user1", "B2": "user2"}
-
-
 class Connection:
     """一条 WS 连接；customer 角色带 operator_filter，只收对应操作员的事件。"""
 
@@ -553,15 +548,17 @@ manager = ConnectionManager()
 @app.websocket("/ws/dashboard")
 @app.websocket("/agent/ws/dashboard")  # 单容器直连前缀（与 /agent/api 对齐）
 async def ws_dashboard(ws: WebSocket, db: Session = Depends(get_db)):
-    # token 走 query 参数；customer 角色按映射只收对应操作员的推送
-    operator_filter = None
+    # token 走 query 参数；customer 角色按绑定的操作员 id 只收对应推送
+    operator_filter = None  # 广播事件里的操作员名，None = 看全部（admin/reviewer）
     token = ws.query_params.get("token")
     if token:
         try:
             payload = parse_token(token)
             u = db.get(User, payload["user_id"])
-            if u is not None:
-                operator_filter = CUSTOMER_MAP.get(u.name)  # 非 customer 为 None（看全部）
+            if u is not None and u.role == "customer" and u.bound_operator_id:
+                watched = db.get(User, u.bound_operator_id)
+                if watched is not None:
+                    operator_filter = watched.name
         except Exception:
             pass
     conn = Connection(ws, operator_filter)

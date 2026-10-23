@@ -20,9 +20,13 @@ def seed_if_empty(db: Session) -> None:
     user = User(name="user", password_hash=hash_password("12345678"), role="operator")
     user1 = User(name="user1", password_hash=hash_password("12345678"), role="operator")
     user2 = User(name="user2", password_hash=hash_password("12345678"), role="operator")
-    b1 = User(name="B1", password_hash=hash_password("12345678"), role="customer")  # 只看 user1 的数据
-    b2 = User(name="B2", password_hash=hash_password("12345678"), role="customer")  # 只看 user2 的数据
+    b1 = User(name="B1", password_hash=hash_password("12345678"), role="customer")
+    b2 = User(name="B2", password_hash=hash_password("12345678"), role="customer")
     db.add_all([admin, operator1, user, user1, user2, b1, b2])
+    db.flush()
+    # 通过 id 外键绑定：B1 ↔ user1，B2 ↔ user2
+    b1.bound_operator_id = user1.id
+    b2.bound_operator_id = user2.id
     db.flush()
 
     now = datetime.now()
