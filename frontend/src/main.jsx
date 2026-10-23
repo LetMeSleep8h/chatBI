@@ -20,7 +20,7 @@ function RequireAuth({ children }) {
 createRoot(document.getElementById('root')).render(
     <StrictMode>
         <ConfigProvider locale={zhCN}>
-            <BrowserRouter>
+            <BrowserRouter basename="/bi">
                 <Routes>
                     {/* ChatBI 对话页保留为首页 */}
                     <Route path="/" element={<App />} />

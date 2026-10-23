@@ -10,7 +10,7 @@ export default function Login() {
     localStorage.setItem('token', resp.token)
     localStorage.setItem('user', JSON.stringify({ name: resp.name, role: resp.role }))
     message.success(`欢迎，${resp.name}`)
-    navigate('/')
+    navigate('/board')
   }
 
   return (

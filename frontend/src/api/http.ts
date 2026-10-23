@@ -8,7 +8,7 @@ export interface ApiResult<T> {
   data: T
 }
 
-const http = axios.create({ baseURL: '', timeout: 60_000 })
+const http = axios.create({ baseURL: '/bi', timeout: 60_000 })
 
 // 请求拦截器：统一带 token
 http.interceptors.request.use((config) => {
