@@ -1,0 +1,348 @@
+import json
+import shutil
+from typing import Optional
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from .database import Base, SessionLocal, engine, get_db
+from .models import Record, Task, User
+from .seed import ONLINE_STATIONS_FAKE, seed_if_empty
+from .security import current_user, hash_password, issue_token
+from .statemachine import allowed, check
+
+app = FastAPI(title="具身智能数据采集平台（最小原型）", docs_url="/agent/docs")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+MAX_SIZE = 50 * 1024 * 1024
+DATA_TYPES = {"视频", "触觉", "关节角度"}
+
+
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(engine)
+    db = SessionLocal()
+    try:
+        seed_if_empty(db)
+    finally:
+        db.close()
+
+
+# ---------------- auth ----------------
+
+# 接口同时挂 /api 与 /agent/api：单容器直连时前端 baseURL=/agent/api，
+# 经反向代理剥前缀后走 /api（见 nginx-location.conf）
+api = APIRouter()
+
+
+class LoginReq(BaseModel):
+    name: str
+    password: str
+
+
+@api.post("/auth/login")
+def login(req: LoginReq, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.name == req.name).first()
+    if user is None or user.password_hash != hash_password(req.password):
+        raise HTTPException(401, "用户名或密码错误")
+    return {"token": issue_token(user.id, user.role), "name": user.name, "role": user.role}
+
+
+@api.get("/auth/me")
+def me(user=Depends(current_user), db: Session = Depends(get_db)):
+    u = db.get(User, user["user_id"])
+    if u is None:
+        raise HTTPException(404, "用户不存在")
+    return {"id": u.id, "name": u.name, "role": u.role}
+
+
+# ---------------- tasks ----------------
+
+
+def require_manager(user):
+    """admin 账号在本系统角色为 reviewer，具备管理能力；统一放行 admin/reviewer。"""
+    if user["role"] not in ("admin", "reviewer"):
+        raise HTTPException(403, "需要管理端角色（admin/reviewer）")
+
+
+def task_out(t: Task, names: dict[int, str]) -> dict:
+    return {
+        "id": t.id,
+        "name": t.name,
+        "station": t.station,
+        "robot_type": t.robot_type,
+        "target_count": t.target_count,
+        "collected_count": t.collected_count,
+        "status": t.status,
+        "assignee_id": t.assignee_id,
+        "assignee_name": names.get(t.assignee_id) if t.assignee_id else None,
+        "created_at": t.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def record_out(r: Record, names: dict[int, str]) -> dict:
+    return {
+        "id": r.id,
+        "task_id": r.task_id,
+        "operator_id": r.operator_id,
+        "operator_name": names.get(r.operator_id, str(r.operator_id)),
+        "data_type": r.data_type,
+        "status": r.status,
+        "review_comment": r.review_comment,
+        "reviewed_at": r.reviewed_at.strftime("%Y-%m-%d %H:%M:%S") if r.reviewed_at else None,
+        "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "file_name": r.file_name,
+        "meta_json": r.meta_json,
+    }
+
+
+def user_names(db: Session) -> dict[int, str]:
+    return {u.id: u.name for u in db.query(User).all()}
+
+
+class CreateTaskReq(BaseModel):
+    name: str
+    station: str
+    robot_type: str
+    target_count: int
+
+
+@api.get("/tasks")
+def list_tasks(user=Depends(current_user), db: Session = Depends(get_db)):
+    q = db.query(Task).order_by(Task.created_at.desc())
+    if user["role"] == "operator":
+        q = q.filter(Task.assignee_id == user["user_id"])
+    names = user_names(db)
+    return [task_out(t, names) for t in q.all()]
+
+
+@api.post("/tasks", status_code=200)
+def create_task(req: CreateTaskReq, user=Depends(current_user), db: Session = Depends(get_db)):
+    require_manager(user)
+    t = Task(name=req.name, station=req.station, robot_type=req.robot_type,
+             target_count=req.target_count, collected_count=0, status="待分配",
+             created_by=user["user_id"])
+    db.add(t)
+    db.commit()
+    return task_out(t, user_names(db))
+
+
+class AssignReq(BaseModel):
+    operator_id: int
+
+
+@api.patch("/tasks/{task_id}/assign")
+def assign(task_id: int, req: AssignReq, user=Depends(current_user), db: Session = Depends(get_db)):
+    require_manager(user)
+    t = db.get(Task, task_id)
+    if t is None:
+        raise HTTPException(404, f"任务不存在: {task_id}")
+    op = db.get(User, req.operator_id)
+    if op is None or op.role != "operator":
+        raise HTTPException(404, f"操作员不存在或角色不对: {req.operator_id}")
+    check("task", t.status, "采集中")
+    t.status = "采集中"
+    t.assignee_id = op.id
+    db.commit()
+    return task_out(t, user_names(db))
+
+
+@api.get("/tasks/{task_id}")
+def task_detail(task_id: int, user=Depends(current_user), db: Session = Depends(get_db)):
+    t = db.get(Task, task_id)
+    if t is None:
+        raise HTTPException(404, f"任务不存在: {task_id}")
+    if user["role"] == "operator" and t.assignee_id != user["user_id"]:
+        raise HTTPException(403, "无权查看他人任务")
+    names = user_names(db)
+    records = (
+        db.query(Record)
+        .filter(Record.task_id == task_id, Record.status != "已重传")
+        .order_by(Record.id.desc())
+        .all()
+        if user["role"] != "operator"
+        else db.query(Record)
+        .filter(Record.task_id == task_id, Record.operator_id == user["user_id"])
+        .order_by(Record.id.desc())
+        .all()
+    )
+    return {
+        "task": task_out(t, names),
+        "progress": {"collected": t.collected_count, "target": t.target_count},
+        "records": [record_out(r, names) for r in records],
+    }
+
+
+# ---------------- records ----------------
+
+
+@api.post("/records")
+async def upload_record(
+    task_id: int = Form(...),
+    data_type: str = Form(...),
+    meta: str = Form("{}"),
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if user["role"] != "operator":
+        raise HTTPException(403, "只有 operator 可上传数据")
+    t = db.get(Task, task_id)
+    if t is None:
+        raise HTTPException(404, f"任务不存在: {task_id}")
+    if t.assignee_id != user["user_id"]:
+        raise HTTPException(403, "任务未分配给你，无权上传")  # 防水平越权
+    if t.status not in ("采集中", "待质检"):
+        raise HTTPException(409, f"任务当前状态为「{t.status}」，不允许上传")
+    if data_type not in DATA_TYPES:
+        raise HTTPException(422, "data_type 只允许: 视频 / 触觉 / 关节角度")
+    if file.size is None or file.size == 0:
+        raise HTTPException(422, "文件不能为空")
+    if file.size > MAX_SIZE:
+        raise HTTPException(413, "文件超过 50MB 上限")
+
+    # 被打回重传：新增记录，旧「被打回」记录置为「已重传」（审计链）
+    for old in (
+        db.query(Record)
+        .filter(Record.task_id == task_id, Record.operator_id == user["user_id"],
+                Record.status == "被打回")
+        .all()
+    ):
+        check("record", old.status, "已重传")
+        old.status = "已重传"
+
+    target_dir = UPLOAD_DIR / str(task_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_name = file.filename or "unnamed"
+    dest = target_dir / f"{int(datetime.now().timestamp() * 1000)}_{file_name}"
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    r = Record(task_id=task_id, operator_id=user["user_id"], data_type=data_type,
+               file_path=str(dest), meta_json=meta, status="待质检",
+               created_at=datetime.now(), file_name=file_name)
+    db.add(r)
+
+    # 已采条数（非已重传）达标 → 任务自动 采集中 → 待质检
+    active = (
+        db.query(Record)
+        .filter(Record.task_id == task_id, Record.status != "已重传")
+        .count()
+    )
+    if t.status == "采集中" and active >= t.target_count:
+        check("task", t.status, "待质检")
+        t.status = "待质检"
+    db.commit()
+    return record_out(r, user_names(db))
+
+
+@api.get("/records")
+def list_records(task_id: Optional[int] = None, user=Depends(current_user),
+                 db: Session = Depends(get_db)):
+    q = db.query(Record).order_by(Record.id.desc())
+    if user["role"] == "operator":
+        q = q.filter(Record.operator_id == user["user_id"])
+    elif task_id is not None:
+        q = q.filter(Record.task_id == task_id)
+    names = user_names(db)
+    return [record_out(r, names) for r in q.all()]
+
+
+class ReviewReq(BaseModel):
+    result: str  # 通过 / 打回
+    comment: Optional[str] = None
+
+
+@api.patch("/records/{record_id}/review")
+def review(record_id: int, req: ReviewReq, user=Depends(current_user),
+           db: Session = Depends(get_db)):
+    if user["role"] not in ("reviewer", "admin"):
+        raise HTTPException(403, "只有 reviewer/admin 可审核")
+    r = db.get(Record, record_id)
+    if r is None:
+        raise HTTPException(404, f"数据条目不存在: {record_id}")
+    if req.result not in ("通过", "打回"):
+        raise HTTPException(422, "result 只允许: 通过 / 打回")
+    if req.result == "打回" and not (req.comment and req.comment.strip()):
+        raise HTTPException(422, "打回时 comment 必填")
+
+    dst = "通过" if req.result == "通过" else "被打回"
+    check("record", r.status, dst)
+    r.status = dst
+    r.review_comment = req.comment
+    r.reviewed_by = user["user_id"]  # 审计：操作人 + 时间
+    r.reviewed_at = datetime.now()
+
+    # 通过 → collected_count+1；达标则任务 待质检 → 已交付
+    if req.result == "通过":
+        t = db.get(Task, r.task_id)
+        t.collected_count += 1
+        if t.collected_count >= t.target_count and allowed("task", t.status, "已交付"):
+            t.status = "已交付"
+    db.commit()
+    return record_out(r, user_names(db))
+
+
+@api.get("/records/{record_id}/download")
+def download(record_id: int, user=Depends(current_user), db: Session = Depends(get_db)):
+    r = db.get(Record, record_id)
+    if r is None:
+        raise HTTPException(404, f"数据条目不存在: {record_id}")
+    if user["role"] == "operator" and r.operator_id != user["user_id"]:
+        raise HTTPException(403, "无权下载他人数据")
+    path = Path(r.file_path)
+    if not path.exists():
+        raise HTTPException(404, "文件不存在")
+    return FileResponse(path, filename=r.file_name)
+
+
+# ---------------- stats ----------------
+
+
+@api.get("/stats")
+def stats(user=Depends(current_user), db: Session = Depends(get_db)):
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return {
+        "ongoing_tasks": db.query(Task).filter(Task.status.in_(["采集中", "待质检"])).count(),
+        "today_collected": db.query(Record).filter(Record.created_at >= today).count(),
+        "pending_review": db.query(Record).filter(Record.status == "待质检").count(),
+        "online_stations": ONLINE_STATIONS_FAKE,  # 假数据，P1 接设备心跳
+    }
+
+
+# 双前缀挂载：/api（反代剥前缀后）与 /agent/api（单容器直连）
+app.include_router(api, prefix="/api")
+app.include_router(api, prefix="/agent/api")
+
+# ---------------- 前端静态托管 ----------------
+
+
+@app.get("/")
+def root():
+    return RedirectResponse("/agent/")
+
+
+STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
+
+
+@app.get("/agent/{full_path:path}", include_in_schema=False)
+def spa(full_path: str):
+    """静态文件存在则返回文件，否则回退 index.html（SPA history 路由）。"""
+    if full_path:
+        target = (STATIC_DIR / full_path).resolve()
+        if target.is_file() and str(target).startswith(str(STATIC_DIR.resolve())):
+            return FileResponse(target)
+    return FileResponse(STATIC_DIR / "index.html")

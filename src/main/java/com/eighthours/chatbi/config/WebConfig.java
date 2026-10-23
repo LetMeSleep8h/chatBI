@@ -28,7 +28,7 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
                 // 只拦截数据采集平台的接口；/bi/** 是原 ChatBI 接口，保持免 token
-                .addPathPatterns("/tasks/**", "/records/**")
+                .addPathPatterns("/tasks/**", "/records/**", "/devices/**", "/stats/**")
                 .excludePathPatterns("/auth/**");  // 登录/注册本身免 token
     }
 }

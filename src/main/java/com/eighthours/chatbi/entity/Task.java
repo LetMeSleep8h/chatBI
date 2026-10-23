@@ -1,6 +1,7 @@
 package com.eighthours.chatbi.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -18,12 +19,21 @@ public class Task {
 
     private String station;
 
+    /** 机器人类型 */
+    private String robotType;
+
     private Integer targetCount;
 
-    /** 待分配 → 采集中 → 已完成 */
+    private Integer collectedCount;
+
+    /** 待分配 → 采集中 → 待质检 → 已交付 */
     private String status;
 
     private Long assigneeId;
+
+    /** 负责操作员姓名（联表展示用，非表字段） */
+    @TableField(exist = false)
+    private String assigneeName;
 
     private Long createdBy;
 

@@ -37,6 +37,8 @@ public class Dtos {
         private String name;
         @NotBlank
         private String station;
+        @NotBlank
+        private String robotType;
         private Integer targetCount;
     }
 

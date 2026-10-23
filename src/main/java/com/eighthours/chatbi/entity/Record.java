@@ -18,7 +18,11 @@ public class Record {
 
     private Long operatorId;
 
-    private String filePath;
+    /** 数据文件路径（下载经 /records/{id}/download） */
+    private String dataUrl;
+
+    /** 视频 / 触觉 / 关节角度 */
+    private String dataType;
 
     /** 工位号/采集时间/备注 等 JSON */
     private String metaJson;
@@ -32,6 +36,9 @@ public class Record {
 
     private LocalDateTime reviewedAt;
 
-    /** 原始文件名，用于幂等判断 */
+    /** 上传时间（审计） */
+    private LocalDateTime createdAt;
+
+    /** 原始文件名，用于幂等判断与下载命名 */
     private String fileName;
 }

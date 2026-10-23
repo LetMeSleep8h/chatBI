@@ -1,1 +1,0 @@
-{"root":["./src/main.tsx","./src/api/auth.ts","./src/api/http.ts","./src/api/records.ts","./src/api/status.tsx","./src/api/tasks.ts","./src/components/uploadmodal.tsx","./src/pages/board.tsx","./src/pages/login.tsx","./src/pages/taskdetail.tsx"],"version":"5.9.3"}

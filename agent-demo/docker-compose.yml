@@ -1,0 +1,12 @@
+services:
+  agent-demo:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # 生产环境务必换成随机长随机串
+      - AUTH_SECRET=${AUTH_SECRET:-dev-only-secret-change-me}
+    volumes:
+      # SQLite 数据库文件与上传文件持久化
+      - ./data:/app/data
+      - ./uploads:/app/uploads

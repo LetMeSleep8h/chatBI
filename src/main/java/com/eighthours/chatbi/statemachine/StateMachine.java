@@ -7,7 +7,7 @@ import java.util.Set;
 
 /**
  * 集中管理所有状态流转规则。
- * 任务状态：待分配 → 采集中 → 已完成
+ * 任务状态：待分配 → 采集中 → 待质检 → 已交付
  * 记录状态：待质检 → 通过 / 被打回；被打回的记录重传后 → 已重传（原记录）
  */
 public final class StateMachine {
@@ -16,7 +16,8 @@ public final class StateMachine {
     private static final Map<String, Map<String, Set<String>>> TRANSITIONS = Map.of(
             "任务", Map.of(
                     "待分配", Set.of("采集中"),
-                    "采集中", Set.of("已完成")),
+                    "采集中", Set.of("待质检"),
+                    "待质检", Set.of("已交付")),
             "记录", Map.of(
                     "待质检", Set.of("通过", "被打回"),
                     "被打回", Set.of("已重传"))

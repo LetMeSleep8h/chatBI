@@ -19,9 +19,6 @@ spring:
 server:
   port: 8090
 
-zhipu:
-  api-key: ${ZHIPU_API_KEY}
-
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

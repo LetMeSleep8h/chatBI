@@ -26,8 +26,9 @@ public class DataInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        seed("admin", "admin123", "reviewer");
+        seed("admin", "admin123", "admin");
         seed("operator1", "operator123", "operator");
+        seed("reviewer1", "reviewer123", "reviewer");
     }
 
     private void seed(String name, String password, String role) throws NoSuchAlgorithmException {

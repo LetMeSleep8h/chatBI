@@ -6,9 +6,13 @@ import com.eighthours.chatbi.common.BizException;
 import com.eighthours.chatbi.entity.Record;
 import com.eighthours.chatbi.entity.Task;
 import com.eighthours.chatbi.mapper.RecordMapper;
+import com.eighthours.chatbi.mapper.TaskMapper;
 import com.eighthours.chatbi.statemachine.StateMachine;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,27 +23,31 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class RecordService {
 
     private static final long MAX_SIZE = 50L * 1024 * 1024;
+    private static final Set<String> DATA_TYPES = Set.of("视频", "触觉", "关节角度");
 
     private final RecordMapper recordMapper;
+    private final TaskMapper taskMapper;
     private final TaskService taskService;
 
     @Value("${upload.dir}")
     private String uploadDir;
 
     /**
-     * operator 上传数据条目。
-     * - 任务必须已分配给自己且处于采集中
+     * operator 上传数据条目（状态待质检）。
+     * - 任务须已分配给自己，且处于 采集中 或 待质检（被打回重传场景）
      * - 幂等：同一 operator 对同一 task 的同一文件名在「待质检」状态重复上传 → 409
-     * - 被打回后重传：新增记录，同一 task 下该 operator 旧的「被打回」记录改为「已重传」
+     * - 被打回后重传：新增记录，同 task 下该 operator 旧的「被打回」记录改为「已重传」
+     * - 已采数达标时任务自动 采集中 → 待质检
      */
     @Transactional
-    public Record upload(long taskId, MultipartFile file, String metaJson) throws IOException {
+    public Record upload(long taskId, MultipartFile file, String dataType, String metaJson) throws IOException {
         Task task = taskService.getById(taskId);
         long userId = AuthContext.userId();
         if (!"operator".equals(AuthContext.role())) {
@@ -48,8 +56,11 @@ public class RecordService {
         if (task.getAssigneeId() == null || userId != task.getAssigneeId()) {
             throw BizException.forbidden("任务未分配给你，无权上传");
         }
-        if (!"采集中".equals(task.getStatus())) {
+        if (!"采集中".equals(task.getStatus()) && !"待质检".equals(task.getStatus())) {
             throw BizException.conflict("任务当前状态为「" + task.getStatus() + "」，不允许上传");
+        }
+        if (dataType == null || !DATA_TYPES.contains(dataType)) {
+            throw BizException.unprocessable("data_type 只允许: 视频 / 触觉 / 关节角度");
         }
 
         String fileName = file.getOriginalFilename();
@@ -81,7 +92,7 @@ public class RecordService {
             recordMapper.updateById(old);
         }
 
-        // 保存文件到 ./uploads/
+        // 保存文件到 ./uploads/{taskId}/
         Path dir = Path.of(uploadDir, String.valueOf(taskId));
         Files.createDirectories(dir);
         Path target = dir.resolve(System.currentTimeMillis() + "_" + fileName);
@@ -92,11 +103,18 @@ public class RecordService {
         Record record = new Record();
         record.setTaskId(taskId);
         record.setOperatorId(userId);
-        record.setFilePath(target.toString());
+        record.setDataUrl(target.toString());
+        record.setDataType(dataType);
         record.setMetaJson(metaJson);
         record.setStatus("待质检");
+        record.setCreatedAt(LocalDateTime.now());
         record.setFileName(fileName);
         recordMapper.insert(record);
+
+        // 任务已采数 +1，达标则自动流转 待质检
+        task.setCollectedCount(task.getCollectedCount() + 1);
+        taskMapper.updateById(task);
+        taskService.submitIfReached(taskId);
         return record;
     }
 
@@ -112,17 +130,14 @@ public class RecordService {
         return recordMapper.selectList(wrapper.orderByDesc(Record::getId));
     }
 
-    /** reviewer 审核：通过 / 打回（打回 comment 必填 422）；通过后可能触发任务完成流转 */
+    /** reviewer 审核：通过 / 打回（打回 comment 必填 422） */
     @Transactional
     public Record review(long recordId, String result, String comment) {
         String role = AuthContext.role();
         if (!"reviewer".equals(role) && !"admin".equals(role)) {
             throw BizException.forbidden("只有 reviewer/admin 可审核");
         }
-        Record record = recordMapper.selectById(recordId);
-        if (record == null) {
-            throw BizException.notFound("数据条目不存在: " + recordId);
-        }
+        Record record = getById(recordId);
         if (!"通过".equals(result) && !"打回".equals(result)) {
             throw BizException.unprocessable("result 只允许: 通过 / 打回");
         }
@@ -137,10 +152,6 @@ public class RecordService {
         record.setReviewedBy(AuthContext.userId());
         record.setReviewedAt(LocalDateTime.now());
         recordMapper.updateById(record);
-
-        if ("通过".equals(result)) {
-            taskService.completeIfReached(record.getTaskId());
-        }
         return record;
     }
 
@@ -151,5 +162,26 @@ public class RecordService {
             wrapper.eq(Record::getOperatorId, AuthContext.userId());
         }
         return recordMapper.selectList(wrapper.orderByDesc(Record::getId));
+    }
+
+    /** 数据文件下载：operator 仅限自己的记录 */
+    public Resource loadForDownload(long recordId) {
+        Record record = getById(recordId);
+        if ("operator".equals(AuthContext.role()) && AuthContext.userId() != record.getOperatorId()) {
+            throw BizException.forbidden("无权下载他人数据");
+        }
+        return new FileSystemResource(record.getDataUrl());
+    }
+
+    public String fileNameOf(long recordId) {
+        return getById(recordId).getFileName();
+    }
+
+    private Record getById(long recordId) {
+        Record record = recordMapper.selectById(recordId);
+        if (record == null) {
+            throw BizException.notFound("数据条目不存在: " + recordId);
+        }
+        return record;
     }
 }
