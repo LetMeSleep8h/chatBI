@@ -67,8 +67,9 @@ AUTH_SECRET=your-random-secret docker compose up -d --build
 
 | 用户名 | 密码 | 角色 |
 |---|---|---|
-| admin | demo-admin-2026 | reviewer（管理端：建任务/分配/审核） |
-| operator1 | demo-operator-2026 | operator（上传/重传） |
+| admin | 12345678 | reviewer（管理端：建任务/分配/审核） |
+| operator1 | 12345678 | operator（上传/重传） |
+| user | 12345678 | operator（普通用户） |
 
 > 说明：默认管理员账号的角色值为 `reviewer`，拥有建任务/分配/审核全部管理能力（`require_manager` 同时放行 admin/reviewer），与种子账号设计一致。
 

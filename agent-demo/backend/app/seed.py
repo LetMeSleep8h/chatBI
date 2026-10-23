@@ -15,9 +15,10 @@ def seed_if_empty(db: Session) -> None:
     if db.query(User).count() > 0:
         return
 
-    admin = User(name="admin", password_hash=hash_password("demo-admin-2026"), role="reviewer")
-    operator1 = User(name="operator1", password_hash=hash_password("demo-operator-2026"), role="operator")
-    db.add_all([admin, operator1])
+    admin = User(name="admin", password_hash=hash_password("12345678"), role="reviewer")
+    operator1 = User(name="operator1", password_hash=hash_password("12345678"), role="operator")
+    user = User(name="user", password_hash=hash_password("12345678"), role="operator")
+    db.add_all([admin, operator1, user])
     db.flush()
 
     now = datetime.now()
