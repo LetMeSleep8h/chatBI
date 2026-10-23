@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Card, Statistic } from 'antd'
+import { Button, Card, Space, Statistic } from 'antd'
 import { pushMock } from '../api/types'
 
 interface StreamEntry {
@@ -29,7 +29,10 @@ export default function Push({ name }: { name: string }) {
 
   return (
     <div style={{ minHeight: '100vh', background: '#f0f2f5', padding: 24 }}>
-      <h2 style={{ textAlign: 'center' }}>{name} · 模拟数据推送</h2>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <Button onClick={() => { localStorage.clear(); location.href = '/agent/login' }}>退出登录</Button>
+      </div>
+      <h2 style={{ textAlign: 'center', marginTop: 0 }}>{name} · 模拟数据推送</h2>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 24, marginTop: 48 }}>
         <Button
           type="primary"
