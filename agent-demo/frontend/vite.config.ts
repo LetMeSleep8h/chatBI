@@ -12,6 +12,11 @@ export default defineConfig({
         target: 'http://localhost:8070',
         changeOrigin: true,
       },
+      // WebSocket 代理（管理端实时看板）
+      '/agent/ws': {
+        target: 'ws://localhost:8070',
+        ws: true,
+      },
     },
   },
 })

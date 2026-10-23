@@ -46,6 +46,18 @@ export interface CurrentUser {
   role: 'admin' | 'operator' | 'reviewer'
 }
 
+export interface CollectSession {
+  session_id: string
+  task_id: number
+  task_name: string
+  station: string
+  robot_type: string
+  collected: number
+  target: number
+  status: string
+  started_at: string
+}
+
 export async function login(name: string, password: string) {
   const resp = await http.post<{ token: string; name: string; role: string }>('/auth/login', {
     name,
@@ -81,6 +93,11 @@ export async function getTaskDetail(id: number) {
 
 export async function getStats() {
   return (await http.get<PlatformStats>('/stats')).data
+}
+
+/** operator：开启采集会话（任务状态 → 采集中） */
+export async function startSession(taskId: number) {
+  return (await http.post<CollectSession>('/sessions/start', { task_id: taskId })).data
 }
 
 export async function listRecords(taskId?: number) {

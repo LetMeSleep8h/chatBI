@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Col, Form, Input, InputNumber, message, Modal, Row, Space, Spin } from 'antd'
 import { Link, useNavigate } from 'react-router-dom'
-import { assignTask, createTask, getStats, listTasks, mockIngest, mockUploadRecord, type PlatformStats, type Task } from '../api/types'
+import { assignTask, createTask, getStats, listTasks, mockIngest, type PlatformStats, type Task } from '../api/types'
+import RealtimePanel from '../components/RealtimePanel'
 import { StatusTag } from '../api/status'
 
 const COLUMNS = ['待分配', '采集中', '待质检', '已交付']
@@ -33,6 +34,18 @@ export default function Board() {
   const [assignForm] = Form.useForm()
   const [ingestForm] = Form.useForm()
 
+  // WebSocket record_new 事件：统计卡片即时跳动 + 刷新任务列表
+  async function onRecordEvent() {
+    setStats((prev) =>
+      prev
+        ? { ...prev, today_collected: prev.today_collected + 1, pending_review: prev.pending_review + 1 }
+        : prev,
+    )
+    try {
+      setTasks(await listTasks())
+    } catch { /* 忽略 */ }
+  }
+
   async function load() {
     const [ts, st] = await Promise.all([listTasks(), getStats()])
     setTasks(ts)
@@ -57,16 +70,10 @@ export default function Board() {
     load().catch(() => {})
   }
 
-  async function doMockUpload(t: Task) {
-    await mockUploadRecord(t.id)
-    message.success('已 mock 上传一条（待质检）')
-    load().catch(() => {})
-  }
-
   function cardActions(t: Task) {
     const list: React.ReactNode[] = [<Link key="detail" to={`/tasks/${t.id}`}>详情</Link>]
     if (user.role === 'operator' && (t.status === '采集中' || t.status === '待质检')) {
-      list.push(<a key="upload" onClick={() => doMockUpload(t)}>mock 上传一条</a>)
+      list.push(<Link key="upload" to="/console">进入工位控制台</Link>)
     }
     if (isManager(user.role) && t.status === '待分配') {
       list.push(<a key="assign" onClick={() => setAssignTaskId(t.id)}>分配操作员</a>)
@@ -112,6 +119,8 @@ export default function Board() {
           </Col>
         ))}
       </Row>
+
+      {isManager(user.role) && <RealtimePanel onEvent={() => onRecordEvent()} />}
 
       {/* 任务卡片按状态分栏 */}
       <Row gutter={16}>

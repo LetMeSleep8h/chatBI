@@ -4,6 +4,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Board from './pages/Board'
+import Console from './pages/Console'
 import Login from './pages/Login'
 import TaskDetail from './pages/TaskDetail'
 import './index.css'
@@ -24,6 +25,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<RequireAuth><Board /></RequireAuth>} />
           <Route path="/tasks/:id" element={<RequireAuth><TaskDetail /></RequireAuth>} />
+          <Route path="/console" element={<RequireAuth><Console /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

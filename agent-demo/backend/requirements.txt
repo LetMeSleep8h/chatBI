@@ -1,4 +1,5 @@
 fastapi==0.115.6
 uvicorn==0.34.0
+websockets==13.1  # uvicorn 的 WS 协议实现（FastAPI WebSocket 必需）
 sqlalchemy==2.0.36
 python-multipart==0.0.20

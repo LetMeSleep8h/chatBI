@@ -100,6 +100,22 @@ AUTH_SECRET=your-random-secret docker compose up -d --build
 
 越权访问统一 403，资源不存在统一 404，非法状态跳转 409，打回缺 comment 422，文件超 50MB 413。
 
+## WebSocket 实时推送
+
+管理端看板通过 WebSocket（`/agent/ws/dashboard`）订阅数据流入事件，operator 产出数据（mock 上传/采集会话/工位模拟）入库成功后，服务端广播 `record_new` 事件，看板 1 秒内实时更新（流入列表 + 每分钟折线图 + 统计卡片），无需手动刷新。断开后前端 3 秒自动重连，连接状态在看板角落显示。
+
+operator 侧另有"工位控制台"（`/agent/console`）：开启采集会话后每 2 秒自动产出一条，进度条实时推进，达标自动停止。
+
+**nginx 部署注意**（WebSocket 握手必需，缺了会握手失败）：`/agent/` 的 location 需要
+加上升级头与长连接超时：
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_read_timeout 300s;
+```
+
 ## 三账号隔离对比
 
 数据隔离是本平台的演示重点：同一套接口，不同角色看到的数据范围完全不同。

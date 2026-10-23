@@ -5,7 +5,8 @@ from typing import Optional
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (APIRouter, Depends, FastAPI, File, Form, HTTPException, Request,
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -254,6 +255,21 @@ async def upload_record(
         check("task", t.status, "待质检")
         t.status = "待质检"
     db.commit()
+
+    # 入库成功 → WebSocket 广播给管理端实时看板
+    operator = db.get(User, user["user_id"])
+    await manager.broadcast({
+        "type": "record_new",
+        "task_id": t.id,
+        "task_name": t.name,
+        "station": t.station,
+        "operator": operator.name if operator else str(user["user_id"]),
+        "data_type": r.data_type,
+        "record_id": r.id,
+        "created_at": r.created_at.strftime("%H:%M:%S"),
+        "collected_count": t.collected_count,
+        "target_count": t.target_count,
+    })
     return record_out(r, user_names(db))
 
 
@@ -359,8 +375,8 @@ class MockIngestReq(BaseModel):
 
 
 @api.post("/mock/ingest")
-def mock_ingest(req: MockIngestReq, user=Depends(current_user),
-                db: Session = Depends(get_db)):
+async def mock_ingest(req: MockIngestReq, user=Depends(current_user),
+                      db: Session = Depends(get_db)):
     """模拟采集工位自动上传（MVP 用它代替工位 SDK），仅管理端可调用。"""
     if user["role"] not in ("admin", "reviewer"):
         raise HTTPException(403, "需要管理端角色（admin/reviewer）")
@@ -378,7 +394,59 @@ def mock_ingest(req: MockIngestReq, user=Depends(current_user),
         t.status = "待质检"
     db.commit()
     names = user_names(db)
+    for r in created:
+        await manager.broadcast({
+            "type": "record_new",
+            "task_id": t.id,
+            "task_name": t.name,
+            "station": t.station,
+            "operator": names.get(user["user_id"], str(user["user_id"])),
+            "data_type": r.data_type,
+            "record_id": r.id,
+            "created_at": r.created_at.strftime("%H:%M:%S"),
+            "collected_count": t.collected_count,
+            "target_count": t.target_count,
+        })
     return [record_out(r, names) for r in created]
+
+
+# ---------------- 采集会话（operator 工位控制台） ----------------
+
+
+class SessionStartReq(BaseModel):
+    task_id: int
+
+
+@api.post("/sessions/start")
+async def start_session(req: SessionStartReq, user=Depends(current_user),
+                        db: Session = Depends(get_db)):
+    """operator 开启指定任务的采集会话：任务须已分配给自己，状态 → 采集中。"""
+    if user["role"] != "operator":
+        raise HTTPException(403, "只有 operator 可开启采集会话")
+    t = db.get(Task, req.task_id)
+    if t is None:
+        raise HTTPException(404, f"任务不存在: {req.task_id}")
+    if t.assignee_id != user["user_id"]:
+        raise HTTPException(403, "任务未分配给你，无权开启会话")
+    if t.status == "待质检":
+        raise HTTPException(409, "任务已达目标条数，等待质检")
+    if t.status == "已交付":
+        raise HTTPException(409, "任务已交付")
+    if t.status == "待分配":
+        check("task", t.status, "采集中")
+        t.status = "采集中"
+    db.commit()
+    return {
+        "session_id": f"s_{t.id}_{int(datetime.now().timestamp())}",
+        "task_id": t.id,
+        "task_name": t.name,
+        "station": t.station,
+        "robot_type": t.robot_type,
+        "collected": t.collected_count,
+        "target": t.target_count,
+        "status": t.status,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 # ---------------- stats ----------------
@@ -393,6 +461,45 @@ def stats(user=Depends(current_user), db: Session = Depends(get_db)):
         "pending_review": db.query(Record).filter(Record.status == "待质检").count(),
         "online_stations": ONLINE_STATIONS_FAKE,  # 假数据，P1 接设备心跳
     }
+
+
+# ---------------- WebSocket 实时推送（管理端看板） ----------------
+
+
+class ConnectionManager:
+    """维护 /ws/dashboard 的活跃连接，提供广播。"""
+
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, message: dict):
+        for ws in list(self.active):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+
+@app.websocket("/ws/dashboard")
+async def ws_dashboard(ws: WebSocket):
+    # demo 阶段不做鉴权；生产建议校验 query 里的 token
+    await manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()  # 保活（客户端 ping）
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
 
 
 # 双前缀挂载：/api（反代剥前缀后）与 /agent/api（单容器直连）
