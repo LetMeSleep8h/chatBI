@@ -18,5 +18,7 @@ export function StatusTag({ status }: { status: string }): ReactNode {
 
 export function currentUser() {
   const raw = localStorage.getItem('user')
-  return raw ? (JSON.parse(raw) as { name: string; role: string }) : null
+  if (raw) return JSON.parse(raw) as { name: string; role: string }
+  // 未登录 → 游客模式（演示数据，管理端视角）
+  return { name: '游客（演示数据）', role: 'reviewer' }
 }

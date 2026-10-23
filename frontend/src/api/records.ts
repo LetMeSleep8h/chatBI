@@ -1,4 +1,5 @@
 import http, { unwrap } from './http'
+import { demoListRecords, demoMode, demoReview, demoUpload } from './demo'
 
 export interface RecordItem {
   id: number
@@ -14,10 +15,12 @@ export interface RecordItem {
 }
 
 export function listRecords(status?: string) {
+  if (demoMode()) return demoListRecords(status)
   return unwrap<RecordItem[]>(http.get('/records', { params: { status } }))
 }
 
 export function reviewRecord(id: number, result: '通过' | '打回', comment?: string) {
+  if (demoMode()) return demoReview(id, result, comment)
   return unwrap<RecordItem>(http.patch(`/records/${id}/review`, { result, comment }))
 }
 
@@ -27,6 +30,7 @@ export function uploadRecord(
   meta: { station: string; collectedAt: string; remark?: string },
   onProgress: (percent: number) => void,
 ) {
+  if (demoMode()) return demoUpload(taskId, file, meta)
   const form = new FormData()
   form.append('taskId', String(taskId))
   form.append('file', file)
